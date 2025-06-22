@@ -1,0 +1,315 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: llm-inference
+  labels:
+    name: llm-inference
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-config
+  namespace: llm-inference
+data:
+  MODEL_NAME: "microsoft/DialoGPT-medium"
+  HOST: "0.0.0.0"
+  PORT: "8000"
+  WORKERS: "1"
+  OMP_NUM_THREADS: "4"
+  MKL_NUM_THREADS: "4"
+  OPENBLAS_NUM_THREADS: "4"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: llm-secrets
+  namespace: llm-inference
+type: Opaque
+data:
+  # Add any secret configurations here (base64 encoded)
+  # HF_TOKEN: <base64-encoded-huggingface-token>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-arm-inference
+  namespace: llm-inference
+  labels:
+    app: llm-arm-inference
+    version: v1
+    architecture: arm64
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: llm-arm-inference
+  template:
+    metadata:
+      labels:
+        app: llm-arm-inference
+        version: v1
+        architecture: arm64
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      # Node selector to ensure pods run on ARM64 nodes
+      nodeSelector:
+        kubernetes.io/arch: arm64
+        # Uncomment if you have specific ARM node labels
+        # node.kubernetes.io/instance-type: "m6g.large"
+        # cloud.google.com/gke-nodepool: "arm-pool"
+        # eks.amazonaws.com/nodegroup: "arm-nodes"
+      
+      # Tolerations for ARM nodes (if they have taints)
+      tolerations:
+      - key: "arm"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      - key: "kubernetes.io/arch"
+        operator: "Equal"
+        value: "arm64"
+        effect: "NoSchedule"
+      
+      # Anti-affinity to spread pods across nodes
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - llm-arm-inference
+              topologyKey: kubernetes.io/hostname
+      
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      
+      containers:
+      - name: llm-inference
+        image: your-registry.com/llm-arm-inference:latest
+        imagePullPolicy: Always
+        
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        
+        envFrom:
+        - configMapRef:
+            name: llm-config
+        - secretRef:
+            name: llm-secrets
+            optional: true
+        
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+            # Uncomment if using GPU
+            # nvidia.com/gpu: 1
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+            # nvidia.com/gpu: 1
+        
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+        
+        volumeMounts:
+        - name: model-cache
+          mountPath: /app/cache
+        - name: tmp
+          mountPath: /tmp
+        
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+      
+      volumes:
+      - name: model-cache
+        emptyDir:
+          sizeLimit: 10Gi
+      - name: tmp
+        emptyDir:
+          sizeLimit: 1Gi
+      
+      # Image pull secrets (if using private registry)
+      # imagePullSecrets:
+      # - name: registry-secret
+      
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 60
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-arm-inference-service
+  namespace: llm-inference
+  labels:
+    app: llm-arm-inference
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8000
+    protocol: TCP
+    name: http
+  selector:
+    app: llm-arm-inference
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: llm-arm-inference-ingress
+  namespace: llm-inference
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    # Enable rate limiting
+    nginx.ingress.kubernetes.io/rate-limit: "10"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    # SSL redirect (uncomment if using HTTPS)
+    # nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  rules:
+  - host: llm-api.your-domain.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: llm-arm-inference-service
+            port:
+              number: 80
+  # TLS configuration (uncomment if using HTTPS)
+  # tls:
+  # - hosts:
+  #   - llm-api.your-domain.com
+  #   secretName: llm-tls-secret
+---
+apiVersion: v1
+kind: ServiceMonitor
+metadata:
+  name: llm-arm-inference-monitor
+  namespace: llm-inference
+  labels:
+    app: llm-arm-inference
+spec:
+  selector:
+    matchLabels:
+      app: llm-arm-inference
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: llm-arm-inference-pdb
+  namespace: llm-inference
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: llm-arm-inference
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: llm-arm-inference-hpa
+  namespace: llm-inference
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: llm-arm-inference
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60

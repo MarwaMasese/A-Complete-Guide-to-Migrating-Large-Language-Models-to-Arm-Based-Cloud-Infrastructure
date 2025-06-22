@@ -1,0 +1,31 @@
+# Alternative requirements with fallback options for compatibility
+# Use this if the main requirements.txt fails
+
+# Core web framework
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+
+# ML/AI libraries with flexible versions
+transformers>=4.30.0
+torch>=2.0.0 --index-url https://download.pytorch.org/whl/cpu
+accelerate>=0.20.0
+
+# Quantization (install separately if needed)
+# bitsandbytes>=0.40.0
+
+# NLP utilities
+sentencepiece>=0.1.90
+protobuf>=4.0.0,<5.0.0
+
+# API utilities
+pydantic>=2.0.0
+aiofiles>=22.0.0
+python-multipart>=0.0.5
+
+# System utilities
+psutil>=5.8.0
+numpy>=1.20.0
+
+# Development/testing (optional)
+# pytest>=7.0.0
+# httpx>=0.24.0
