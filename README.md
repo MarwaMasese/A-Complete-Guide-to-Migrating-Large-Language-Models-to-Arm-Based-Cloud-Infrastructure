@@ -25,7 +25,7 @@ A production-grade containerized LLM inference API optimized for ARM-based cloud
 
 1. **Clone the repository:**
 ```bash
-git clone <repository>
+git clone https://github.com/MarwaMasese/A-Complete-Guide-to-Migrating-Large-Language-Models-to-Arm-Based-Cloud-Infrastructure
 cd llm-arm-inference
 ```
 
