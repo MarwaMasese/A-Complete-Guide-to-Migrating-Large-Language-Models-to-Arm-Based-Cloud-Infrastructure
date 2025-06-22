@@ -4,8 +4,6 @@ import logging
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from typing import Optional, Dict, Any
-import subprocess
-import sys
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -33,40 +31,21 @@ class ModelLoader:
         else:
             return "cpu"
     
-    def _install_llama_cpp(self) -> bool:
-        """Install appropriate llama-cpp-python version based on architecture"""
-        try:
-            if self.is_arm:
-                # For ARM, install with NEON support
-                logger.info("Installing llama-cpp-python with ARM NEON support...")
-                subprocess.check_call([
-                    sys.executable, "-m", "pip", "install", 
-                    "llama-cpp-python==0.2.20",
-                    "--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cpu"
-                ])
-            else:
-                # For x86_64, install standard version
-                logger.info("Installing llama-cpp-python for x86_64...")
-                subprocess.check_call([
-                    sys.executable, "-m", "pip", "install", 
-                    "llama-cpp-python==0.2.20"
-                ])
-            return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to install llama-cpp-python: {e}")
-            return False
-    
     def _get_quantization_config(self) -> Optional[BitsAndBytesConfig]:
         """Get quantization config - only use 4-bit on ARM for better performance"""
         if not self.is_arm:
             return None
             
-        return BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-        )
+        try:
+            return BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+            )
+        except Exception as e:
+            logger.warning(f"Could not create quantization config: {e}")
+            return None
     
     def load_model(self) -> bool:
         """Load the model with appropriate optimizations"""
@@ -80,8 +59,7 @@ class ModelLoader:
                 self.model_name,
                 trust_remote_code=True,
                 padding_side="left"
-            )
-            
+            )            
             # Add pad token if not present
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -116,16 +94,22 @@ class ModelLoader:
             return False
     
     def load_llama_cpp_model(self, model_path: str) -> bool:
-        """Load model using llama.cpp for ARM optimization"""
+        """Load model using llama.cpp for ARM optimization (optional)"""
         try:
-            # Install llama-cpp-python if not already installed
-            if not self._install_llama_cpp():
+            # Try to import llama_cpp
+            try:
+                from llama_cpp import Llama
+            except ImportError:
+                logger.warning("llama-cpp-python not available. Using Transformers backend only.")
                 return False
             
-            from llama_cpp import Llama
+            # Check if model file exists
+            if not os.path.exists(model_path):
+                logger.error(f"Model file not found: {model_path}")
+                return False
             
-            # Configure for ARM NEON if available
-            n_threads = os.cpu_count() if self.is_arm else os.cpu_count() // 2
+            # Configure for optimal performance
+            n_threads = os.cpu_count() if self.is_arm else max(1, os.cpu_count() // 2)
             
             self.model = Llama(
                 model_path=model_path,
